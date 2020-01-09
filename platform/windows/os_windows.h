@@ -160,6 +160,7 @@ class OS_Windows : public OS {
 
 	// functions used by main to initialize/deinitialize the OS
 protected:
+	virtual const char *get_video_driver_name(int p_driver) const;
 	virtual int get_current_video_driver() const;
 
 	virtual void initialize_core();

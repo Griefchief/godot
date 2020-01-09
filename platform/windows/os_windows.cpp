@@ -35,6 +35,8 @@
 
 #include "core/io/marshalls.h"
 #include "core/version_generated.gen.h"
+#include "drivers/dummy/audio_driver_dummy.h"
+#include "drivers/dummy/rasterizer_dummy.h"
 #include "drivers/gles2/rasterizer_gles2.h"
 #include "drivers/gles3/rasterizer_gles3.h"
 #include "drivers/windows/dir_access_windows.h"
@@ -1092,18 +1094,27 @@ typedef enum _SHC_PROCESS_DPI_AWARENESS {
 	SHC_PROCESS_PER_MONITOR_DPI_AWARE = 2
 } SHC_PROCESS_DPI_AWARENESS;
 
+const char *OS_Windows::get_video_driver_name(int p_driver) const {
+	if (is_no_window_mode_enabled()) {
+		return "Dummy";
+	}
+	return OS::get_video_driver_name(p_driver);
+}
+
 int OS_Windows::get_current_video_driver() const {
 	return video_driver_index;
 }
 
 Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int p_audio_driver) {
+	//Tony;
+	bool isWindowsServer = is_no_window_mode_enabled();
 
 	main_loop = NULL;
 	outside = true;
 	window_has_focus = true;
 	WNDCLASSEXW wc;
 
-	if (is_hidpi_allowed()) {
+	if (is_hidpi_allowed() && !isWindowsServer) {
 		HMODULE Shcore = LoadLibraryW(L"Shcore.dll");
 
 		if (Shcore != NULL) {
@@ -1115,6 +1126,20 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 				SetProcessDpiAwareness(SHC_PROCESS_SYSTEM_DPI_AWARE);
 			}
 		}
+	}
+
+	if (isWindowsServer) {
+		video_mode = p_desired;
+		video_mode.width = 320;
+		video_mode.height = 240;
+		video_mode.fullscreen = false;
+		video_mode.resizable = false;
+		video_mode.borderless_window = false;
+		video_mode.maximized = false;
+		video_mode.always_on_top = false;
+		video_mode.use_vsync = false;
+		video_mode.layered = false;
+		video_mode.layered_splash = false;
 	}
 
 	video_mode = p_desired;
@@ -1145,17 +1170,21 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 		return ERR_UNAVAILABLE;
 	}
 
-	use_raw_input = true;
+	if (!isWindowsServer) {
+		use_raw_input = true;
 
-	RAWINPUTDEVICE Rid[1];
+		RAWINPUTDEVICE Rid[1];
 
-	Rid[0].usUsagePage = 0x01;
-	Rid[0].usUsage = 0x02;
-	Rid[0].dwFlags = 0;
-	Rid[0].hwndTarget = 0;
+		Rid[0].usUsagePage = 0x01;
+		Rid[0].usUsage = 0x02;
+		Rid[0].dwFlags = 0;
+		Rid[0].hwndTarget = 0;
 
-	if (RegisterRawInputDevices(Rid, 1, sizeof(Rid[0])) == FALSE) {
-		//registration failed.
+		if (RegisterRawInputDevices(Rid, 1, sizeof(Rid[0])) == FALSE) {
+			//registration failed.
+			use_raw_input = false;
+		}
+	} else {
 		use_raw_input = false;
 	}
 
@@ -1271,8 +1300,12 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 
 #if defined(OPENGL_ENABLED)
 
+	//Tony; hack.
+	if (isWindowsServer)
+		p_video_driver = VIDEO_DRIVER_GLES2;
+
 	bool gles3_context = true;
-	if (p_video_driver == VIDEO_DRIVER_GLES2) {
+	if (p_video_driver != VIDEO_DRIVER_GLES3) {
 		gles3_context = false;
 	}
 
@@ -1280,94 +1313,106 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 	bool gl_initialization_error = false;
 
 	gl_context = NULL;
-	while (!gl_context) {
-		gl_context = memnew(ContextGL_Windows(hWnd, gles3_context));
+	//Tony; no window? make dummy rasterizer.
+	if (isWindowsServer) {
+		RasterizerDummy::make_current();
+	} else {
+		while (!gl_context) {
+			gl_context = memnew(ContextGL_Windows(hWnd, gles3_context));
 
-		if (gl_context->initialize() != OK) {
-			memdelete(gl_context);
-			gl_context = NULL;
+			if (gl_context->initialize() != OK) {
+				memdelete(gl_context);
+				gl_context = NULL;
 
-			if (GLOBAL_GET("rendering/quality/driver/fallback_to_gles2") || editor) {
-				if (p_video_driver == VIDEO_DRIVER_GLES2) {
-					gl_initialization_error = true;
-					break;
-				}
-
-				p_video_driver = VIDEO_DRIVER_GLES2;
-				gles3_context = false;
-			} else {
-				gl_initialization_error = true;
-				break;
-			}
-		}
-	}
-
-	while (true) {
-		if (gles3_context) {
-			if (RasterizerGLES3::is_viable() == OK) {
-				RasterizerGLES3::register_config();
-				RasterizerGLES3::make_current();
-				break;
-			} else {
 				if (GLOBAL_GET("rendering/quality/driver/fallback_to_gles2") || editor) {
+					if (p_video_driver == VIDEO_DRIVER_GLES2) {
+						gl_initialization_error = true;
+						break;
+					}
+
 					p_video_driver = VIDEO_DRIVER_GLES2;
 					gles3_context = false;
-					continue;
 				} else {
 					gl_initialization_error = true;
 					break;
 				}
 			}
-		} else {
-			if (RasterizerGLES2::is_viable() == OK) {
-				RasterizerGLES2::register_config();
-				RasterizerGLES2::make_current();
-				break;
+		}
+
+		while (true) {
+			if (gles3_context) {
+				if (RasterizerGLES3::is_viable() == OK) {
+					RasterizerGLES3::register_config();
+					RasterizerGLES3::make_current();
+					break;
+				} else {
+					if (GLOBAL_GET("rendering/quality/driver/fallback_to_gles2") || editor) {
+						p_video_driver = VIDEO_DRIVER_GLES2;
+						gles3_context = false;
+						continue;
+					} else {
+						gl_initialization_error = true;
+						break;
+					}
+				}
 			} else {
-				gl_initialization_error = true;
-				break;
+				if (RasterizerGLES2::is_viable() == OK) {
+					RasterizerGLES2::register_config();
+					RasterizerGLES2::make_current();
+					break;
+				} else {
+					gl_initialization_error = true;
+					break;
+				}
 			}
 		}
-	}
 
-	if (gl_initialization_error) {
-		OS::get_singleton()->alert("Your video card driver does not support any of the supported OpenGL versions.\n"
-								   "Please update your drivers or if you have a very old or integrated GPU upgrade it.",
-				"Unable to initialize Video driver");
-		return ERR_UNAVAILABLE;
+		if (gl_initialization_error) {
+			OS::get_singleton()->alert("Your video card driver does not support any of the supported OpenGL versions.\n"
+									   "Please update your drivers or if you have a very old or integrated GPU upgrade it.",
+					"Unable to initialize Video driver");
+			return ERR_UNAVAILABLE;
+		}
 	}
 
 	video_driver_index = p_video_driver;
 
-	gl_context->set_use_vsync(video_mode.use_vsync);
+	if (gl_context)
+		gl_context->set_use_vsync(video_mode.use_vsync);
 #endif
 
 	visual_server = memnew(VisualServerRaster);
-	if (get_render_thread_mode() != RENDER_THREAD_UNSAFE) {
-		visual_server = memnew(VisualServerWrapMT(visual_server, get_render_thread_mode() == RENDER_SEPARATE_THREAD));
+	if (!isWindowsServer) {
+		if (get_render_thread_mode() != RENDER_THREAD_UNSAFE) {
+			visual_server = memnew(VisualServerWrapMT(visual_server, get_render_thread_mode() == RENDER_SEPARATE_THREAD));
+		}
 	}
 
 	visual_server->init();
 
 	input = memnew(InputDefault);
-	joypad = memnew(JoypadWindows(input, &hWnd));
+	if (!isWindowsServer)
+		joypad = memnew(JoypadWindows(input, &hWnd));
 
 	power_manager = memnew(PowerWindows);
 
 	AudioDriverManager::initialize(p_audio_driver);
 
-	TRACKMOUSEEVENT tme;
-	tme.cbSize = sizeof(TRACKMOUSEEVENT);
-	tme.dwFlags = TME_LEAVE;
-	tme.hwndTrack = hWnd;
-	tme.dwHoverTime = HOVER_DEFAULT;
-	TrackMouseEvent(&tme);
+	if (!isWindowsServer) {
+		TRACKMOUSEEVENT tme;
+		tme.cbSize = sizeof(TRACKMOUSEEVENT);
+		tme.dwFlags = TME_LEAVE;
+		tme.hwndTrack = hWnd;
+		tme.dwHoverTime = HOVER_DEFAULT;
+		TrackMouseEvent(&tme);
 
-	RegisterTouchWindow(hWnd, 0);
+		RegisterTouchWindow(hWnd, 0);
+	}
 
 	_ensure_user_data_dir();
 
-	DragAcceptFiles(hWnd, true);
+	if (!isWindowsServer)
+		DragAcceptFiles(hWnd, true);
 
 	move_timer_id = 1;
 
@@ -1402,7 +1447,8 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 	}
 
-	update_real_mouse_position();
+	if (!isWindowsServer)
+		update_real_mouse_position();
 
 	return OK;
 }
@@ -1733,7 +1779,7 @@ int OS_Windows::get_screen_dpi(int p_screen) const {
 }
 
 Point2 OS_Windows::get_window_position() const {
-
+	if (is_no_window_mode_enabled()) return last_pos;
 	if (minimized) {
 		return last_pos;
 	}
@@ -1744,7 +1790,7 @@ Point2 OS_Windows::get_window_position() const {
 }
 
 void OS_Windows::set_window_position(const Point2 &p_position) {
-
+	if (is_no_window_mode_enabled()) return;
 	if (video_mode.fullscreen) return;
 	RECT r;
 	GetWindowRect(hWnd, &r);
@@ -1783,7 +1829,7 @@ Size2 OS_Windows::get_real_window_size() const {
 	return Size2();
 }
 void OS_Windows::set_window_size(const Size2 p_size) {
-
+	if (is_no_window_mode_enabled()) return;
 	int w = p_size.width;
 	int h = p_size.height;
 
@@ -1817,7 +1863,7 @@ void OS_Windows::set_window_size(const Size2 p_size) {
 	}
 }
 void OS_Windows::set_window_fullscreen(bool p_enabled) {
-
+	if (is_no_window_mode_enabled()) return;
 	if (video_mode.fullscreen == p_enabled)
 		return;
 
@@ -1863,11 +1909,11 @@ void OS_Windows::set_window_fullscreen(bool p_enabled) {
 	}
 }
 bool OS_Windows::is_window_fullscreen() const {
-
+	if (is_no_window_mode_enabled()) return false;
 	return video_mode.fullscreen;
 }
 void OS_Windows::set_window_resizable(bool p_enabled) {
-
+	if (is_no_window_mode_enabled()) return;
 	if (video_mode.resizable == p_enabled)
 		return;
 
@@ -1876,11 +1922,11 @@ void OS_Windows::set_window_resizable(bool p_enabled) {
 	_update_window_style();
 }
 bool OS_Windows::is_window_resizable() const {
-
+	if (is_no_window_mode_enabled()) return false;
 	return video_mode.resizable;
 }
 void OS_Windows::set_window_minimized(bool p_enabled) {
-
+	if (is_no_window_mode_enabled()) return;
 	if (p_enabled) {
 		maximized = false;
 		minimized = true;
@@ -1897,6 +1943,7 @@ bool OS_Windows::is_window_minimized() const {
 }
 void OS_Windows::set_window_maximized(bool p_enabled) {
 
+	if (is_no_window_mode_enabled()) return;
 	if (p_enabled) {
 		maximized = true;
 		minimized = false;
@@ -1913,6 +1960,7 @@ bool OS_Windows::is_window_maximized() const {
 }
 
 void OS_Windows::set_window_always_on_top(bool p_enabled) {
+	if (is_no_window_mode_enabled()) return;
 	if (video_mode.always_on_top == p_enabled)
 		return;
 
@@ -1926,13 +1974,14 @@ bool OS_Windows::is_window_always_on_top() const {
 }
 
 bool OS_Windows::get_window_per_pixel_transparency_enabled() const {
-
+	if (is_no_window_mode_enabled()) return false;
 	if (!is_layered_allowed()) return false;
 	return layered_window;
 }
 
 void OS_Windows::set_window_per_pixel_transparency_enabled(bool p_enabled) {
 
+	if (is_no_window_mode_enabled()) return;
 	if (!is_layered_allowed()) return;
 	if (layered_window != p_enabled) {
 		if (p_enabled) {
@@ -2791,17 +2840,20 @@ OS::LatinKeyboardVariant OS_Windows::get_latin_keyboard_variant() const {
 
 void OS_Windows::release_rendering_thread() {
 
-	gl_context->release_current();
+	if (gl_context)
+		gl_context->release_current();
 }
 
 void OS_Windows::make_rendering_thread() {
 
-	gl_context->make_current();
+	if (gl_context)
+		gl_context->make_current();
 }
 
 void OS_Windows::swap_buffers() {
 
-	gl_context->swap_buffers();
+	if (gl_context)
+		gl_context->swap_buffers();
 }
 
 void OS_Windows::force_process_input() {
