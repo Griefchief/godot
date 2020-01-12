@@ -54,6 +54,7 @@
 #include <stdio.h>
 #include <windows.h>
 #include <windowsx.h>
+#include "drivers/dummy/texture_loader_dummy.h"
 
 /**
 	@author Juan Linietsky <reduzio@gmail.com>
@@ -160,8 +161,12 @@ class OS_Windows : public OS {
 
 	// functions used by main to initialize/deinitialize the OS
 protected:
+	virtual int get_video_driver_count() const;
 	virtual const char *get_video_driver_name(int p_driver) const;
 	virtual int get_current_video_driver() const;
+
+	virtual int get_audio_driver_count() const;
+	virtual const char *get_audio_driver_name(int p_driver) const;
 
 	virtual void initialize_core();
 	virtual Error initialize(const VideoMode &p_desired, int p_video_driver, int p_audio_driver);
@@ -187,6 +192,9 @@ protected:
 	bool maximized;
 	bool minimized;
 	bool borderless;
+
+	bool is_server_mode;
+	Ref<ResourceFormatDummyTexture> resource_loader_dummy;
 
 public:
 	LRESULT WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);

@@ -1094,8 +1094,16 @@ typedef enum _SHC_PROCESS_DPI_AWARENESS {
 	SHC_PROCESS_PER_MONITOR_DPI_AWARE = 2
 } SHC_PROCESS_DPI_AWARENESS;
 
+
+int OS_Windows::get_video_driver_count() const {
+	if (is_server_mode) {
+		return 1;
+	}
+	return OS::get_video_driver_count();
+}
+
 const char *OS_Windows::get_video_driver_name(int p_driver) const {
-	if (is_no_window_mode_enabled()) {
+	if (is_server_mode) {
 		return "Dummy";
 	}
 	return OS::get_video_driver_name(p_driver);
@@ -1105,72 +1113,115 @@ int OS_Windows::get_current_video_driver() const {
 	return video_driver_index;
 }
 
+
+int OS_Windows::get_audio_driver_count() const {
+	if (is_server_mode) {
+		return 1;
+	}
+	return OS::get_audio_driver_count();
+}
+
+const char *OS_Windows::get_audio_driver_name(int p_driver) const {
+	if (is_server_mode) {
+		return "Dummy";
+	}
+	return OS::get_audio_driver_name(p_driver);
+}
+
 Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int p_audio_driver) {
-	//Tony;
-	bool isWindowsServer = is_no_window_mode_enabled();
+
+	print_line("POTATOS BITCHES");
+	//Tony; okay i think this can be simplified.
+	is_server_mode = is_no_window_mode_enabled();
 
 	main_loop = NULL;
 	outside = true;
-	window_has_focus = true;
-	WNDCLASSEXW wc;
 
-	if (is_hidpi_allowed() && !isWindowsServer) {
-		HMODULE Shcore = LoadLibraryW(L"Shcore.dll");
+	if (is_server_mode) {
 
-		if (Shcore != NULL) {
-			typedef HRESULT(WINAPI * SetProcessDpiAwareness_t)(SHC_PROCESS_DPI_AWARENESS);
+		window_has_focus = false;
+		use_raw_input = false;
+		_render_thread_mode = RENDER_THREAD_SAFE; //force to thread safe.
+		video_mode = p_desired;
+		joypad = NULL;
+		gl_context = NULL;
+		layered_window = false;
 
-			SetProcessDpiAwareness_t SetProcessDpiAwareness = (SetProcessDpiAwareness_t)GetProcAddress(Shcore, "SetProcessDpiAwareness");
+		RasterizerDummy::make_current();
 
-			if (SetProcessDpiAwareness) {
-				SetProcessDpiAwareness(SHC_PROCESS_SYSTEM_DPI_AWARE);
+		video_driver_index = p_video_driver;
+
+		visual_server = memnew(VisualServerRaster);
+		visual_server->init();
+
+		AudioDriverManager::initialize(p_audio_driver);
+
+		input = memnew(InputDefault);
+		power_manager = memnew(PowerWindows);
+
+		_ensure_user_data_dir();
+
+		if (!OS::get_singleton()->is_in_low_processor_usage_mode()) {
+			SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+			DWORD index = 0;
+			HANDLE handle = AvSetMmThreadCharacteristics("Games", &index);
+			if (handle)
+				AvSetMmThreadPriority(handle, AVRT_PRIORITY_CRITICAL);
+
+			// This is needed to make sure that background work does not starve the main thread.
+			// This is only setting priority of this thread, not the whole process.
+			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+		}
+
+		return OK;
+
+	} else {
+
+		window_has_focus = true;
+		WNDCLASSEXW wc;
+
+		if (is_hidpi_allowed()) {
+			HMODULE Shcore = LoadLibraryW(L"Shcore.dll");
+
+			if (Shcore != NULL) {
+				typedef HRESULT(WINAPI * SetProcessDpiAwareness_t)(SHC_PROCESS_DPI_AWARENESS);
+
+				SetProcessDpiAwareness_t SetProcessDpiAwareness = (SetProcessDpiAwareness_t)GetProcAddress(Shcore, "SetProcessDpiAwareness");
+
+				if (SetProcessDpiAwareness) {
+					SetProcessDpiAwareness(SHC_PROCESS_SYSTEM_DPI_AWARE);
+				}
 			}
 		}
-	}
 
-	if (isWindowsServer) {
 		video_mode = p_desired;
-		video_mode.width = 320;
-		video_mode.height = 240;
-		video_mode.fullscreen = false;
-		video_mode.resizable = false;
-		video_mode.borderless_window = false;
-		video_mode.maximized = false;
-		video_mode.always_on_top = false;
-		video_mode.use_vsync = false;
-		video_mode.layered = false;
-		video_mode.layered_splash = false;
-	}
+		//printf("**************** desired %s, mode %s\n", p_desired.fullscreen?"true":"false", video_mode.fullscreen?"true":"false");
+		RECT WindowRect;
 
-	video_mode = p_desired;
-	//printf("**************** desired %s, mode %s\n", p_desired.fullscreen?"true":"false", video_mode.fullscreen?"true":"false");
-	RECT WindowRect;
+		WindowRect.left = 0;
+		WindowRect.right = video_mode.width;
+		WindowRect.top = 0;
+		WindowRect.bottom = video_mode.height;
 
-	WindowRect.left = 0;
-	WindowRect.right = video_mode.width;
-	WindowRect.top = 0;
-	WindowRect.bottom = video_mode.height;
+		memset(&wc, 0, sizeof(WNDCLASSEXW));
+		wc.cbSize = sizeof(WNDCLASSEXW);
+		wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC | CS_DBLCLKS;
+		wc.lpfnWndProc = (WNDPROC)::WndProc;
+		wc.cbClsExtra = 0;
+		wc.cbWndExtra = 0;
+		//wc.hInstance = hInstance;
+		wc.hInstance = godot_hinstance ? godot_hinstance : GetModuleHandle(NULL);
+		wc.hIcon = LoadIcon(NULL, IDI_WINLOGO);
+		wc.hCursor = NULL; //LoadCursor(NULL, IDC_ARROW);
+		wc.hbrBackground = NULL;
+		wc.lpszMenuName = NULL;
+		wc.lpszClassName = L"Engine";
 
-	memset(&wc, 0, sizeof(WNDCLASSEXW));
-	wc.cbSize = sizeof(WNDCLASSEXW);
-	wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC | CS_DBLCLKS;
-	wc.lpfnWndProc = (WNDPROC)::WndProc;
-	wc.cbClsExtra = 0;
-	wc.cbWndExtra = 0;
-	//wc.hInstance = hInstance;
-	wc.hInstance = godot_hinstance ? godot_hinstance : GetModuleHandle(NULL);
-	wc.hIcon = LoadIcon(NULL, IDI_WINLOGO);
-	wc.hCursor = NULL; //LoadCursor(NULL, IDC_ARROW);
-	wc.hbrBackground = NULL;
-	wc.lpszMenuName = NULL;
-	wc.lpszClassName = L"Engine";
+		if (!RegisterClassExW(&wc)) {
+			MessageBox(NULL, "Failed To Register The Window Class.", "ERROR", MB_OK | MB_ICONEXCLAMATION);
+			return ERR_UNAVAILABLE;
+		}
 
-	if (!RegisterClassExW(&wc)) {
-		MessageBox(NULL, "Failed To Register The Window Class.", "ERROR", MB_OK | MB_ICONEXCLAMATION);
-		return ERR_UNAVAILABLE;
-	}
-
-	if (!isWindowsServer) {
 		use_raw_input = true;
 
 		RAWINPUTDEVICE Rid[1];
@@ -1184,14 +1235,11 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 			//registration failed.
 			use_raw_input = false;
 		}
-	} else {
-		use_raw_input = false;
-	}
 
-	pre_fs_valid = true;
-	if (video_mode.fullscreen) {
+		pre_fs_valid = true;
+		if (video_mode.fullscreen) {
 
-		/* this returns DPI unaware size, commenting
+			/* this returns DPI unaware size, commenting
 		DEVMODE current;
 		memset(&current, 0, sizeof(current));
 		EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &current);
@@ -1201,13 +1249,13 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 
 		*/
 
-		EnumSizeData data = { 0, 0, Size2() };
-		EnumDisplayMonitors(NULL, NULL, _MonitorEnumProcSize, (LPARAM)&data);
+			EnumSizeData data = { 0, 0, Size2() };
+			EnumDisplayMonitors(NULL, NULL, _MonitorEnumProcSize, (LPARAM)&data);
 
-		WindowRect.right = data.size.width;
-		WindowRect.bottom = data.size.height;
+			WindowRect.right = data.size.width;
+			WindowRect.bottom = data.size.height;
 
-		/*  DEVMODE dmScreenSettings;
+			/*  DEVMODE dmScreenSettings;
 		memset(&dmScreenSettings,0,sizeof(dmScreenSettings));
 		dmScreenSettings.dmSize=sizeof(dmScreenSettings);
 		dmScreenSettings.dmPelsWidth	= video_mode.width;
@@ -1220,103 +1268,94 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 
 			video_mode.fullscreen=false;
 		}*/
-		pre_fs_valid = false;
-	}
-
-	DWORD dwExStyle;
-	DWORD dwStyle;
-
-	if (video_mode.fullscreen || video_mode.borderless_window) {
-
-		dwExStyle = WS_EX_APPWINDOW;
-		dwStyle = WS_POPUP;
-
-	} else {
-		dwExStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
-		dwStyle = WS_OVERLAPPEDWINDOW;
-		if (!video_mode.resizable) {
-			dwStyle &= ~WS_THICKFRAME;
-			dwStyle &= ~WS_MAXIMIZEBOX;
+			pre_fs_valid = false;
 		}
-	}
 
-	AdjustWindowRectEx(&WindowRect, dwStyle, FALSE, dwExStyle);
+		DWORD dwExStyle;
+		DWORD dwStyle;
 
-	char *windowid;
+		if (video_mode.fullscreen || video_mode.borderless_window) {
+
+			dwExStyle = WS_EX_APPWINDOW;
+			dwStyle = WS_POPUP;
+
+		} else {
+			dwExStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
+			dwStyle = WS_OVERLAPPEDWINDOW;
+			if (!video_mode.resizable) {
+				dwStyle &= ~WS_THICKFRAME;
+				dwStyle &= ~WS_MAXIMIZEBOX;
+			}
+		}
+
+		AdjustWindowRectEx(&WindowRect, dwStyle, FALSE, dwExStyle);
+
+		char *windowid;
 #ifdef MINGW_ENABLED
-	windowid = getenv("GODOT_WINDOWID");
+		windowid = getenv("GODOT_WINDOWID");
 #else
-	size_t len;
-	_dupenv_s(&windowid, &len, "GODOT_WINDOWID");
+		size_t len;
+		_dupenv_s(&windowid, &len, "GODOT_WINDOWID");
 #endif
 
-	if (windowid) {
+		if (windowid) {
 
 // strtoull on mingw
 #ifdef MINGW_ENABLED
-		hWnd = (HWND)strtoull(windowid, NULL, 0);
+			hWnd = (HWND)strtoull(windowid, NULL, 0);
 #else
-		hWnd = (HWND)_strtoui64(windowid, NULL, 0);
+			hWnd = (HWND)_strtoui64(windowid, NULL, 0);
 #endif
-		free(windowid);
-		SetLastError(0);
-		user_proc = (WNDPROC)GetWindowLongPtr(hWnd, GWLP_WNDPROC);
-		SetWindowLongPtr(hWnd, GWLP_WNDPROC, (LONG_PTR)(WNDPROC)::WndProc);
-		DWORD le = GetLastError();
-		if (user_proc == 0 && le != 0) {
+			free(windowid);
+			SetLastError(0);
+			user_proc = (WNDPROC)GetWindowLongPtr(hWnd, GWLP_WNDPROC);
+			SetWindowLongPtr(hWnd, GWLP_WNDPROC, (LONG_PTR)(WNDPROC)::WndProc);
+			DWORD le = GetLastError();
+			if (user_proc == 0 && le != 0) {
 
-			printf("Error setting WNDPROC: %li\n", le);
+				printf("Error setting WNDPROC: %li\n", le);
+			};
+			GetWindowLongPtr(hWnd, GWLP_WNDPROC);
+
+			RECT rect;
+			if (!GetClientRect(hWnd, &rect)) {
+				MessageBoxW(NULL, L"Window Creation Error.", L"ERROR", MB_OK | MB_ICONEXCLAMATION);
+				return ERR_UNAVAILABLE;
+			};
+			video_mode.width = rect.right;
+			video_mode.height = rect.bottom;
+			video_mode.fullscreen = false;
+		} else {
+
+			hWnd = CreateWindowExW(
+					dwExStyle,
+					L"Engine", L"",
+					dwStyle | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+					(GetSystemMetrics(SM_CXSCREEN) - WindowRect.right) / 2,
+					(GetSystemMetrics(SM_CYSCREEN) - WindowRect.bottom) / 2,
+					WindowRect.right - WindowRect.left,
+					WindowRect.bottom - WindowRect.top,
+					NULL, NULL, hInstance, NULL);
+			if (!hWnd) {
+				MessageBoxW(NULL, L"Window Creation Error.", L"ERROR", MB_OK | MB_ICONEXCLAMATION);
+				return ERR_UNAVAILABLE;
+			}
 		};
-		GetWindowLongPtr(hWnd, GWLP_WNDPROC);
 
-		RECT rect;
-		if (!GetClientRect(hWnd, &rect)) {
-			MessageBoxW(NULL, L"Window Creation Error.", L"ERROR", MB_OK | MB_ICONEXCLAMATION);
-			return ERR_UNAVAILABLE;
-		};
-		video_mode.width = rect.right;
-		video_mode.height = rect.bottom;
-		video_mode.fullscreen = false;
-	} else {
-
-		hWnd = CreateWindowExW(
-				dwExStyle,
-				L"Engine", L"",
-				dwStyle | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-				(GetSystemMetrics(SM_CXSCREEN) - WindowRect.right) / 2,
-				(GetSystemMetrics(SM_CYSCREEN) - WindowRect.bottom) / 2,
-				WindowRect.right - WindowRect.left,
-				WindowRect.bottom - WindowRect.top,
-				NULL, NULL, hInstance, NULL);
-		if (!hWnd) {
-			MessageBoxW(NULL, L"Window Creation Error.", L"ERROR", MB_OK | MB_ICONEXCLAMATION);
-			return ERR_UNAVAILABLE;
+		if (video_mode.always_on_top) {
+			SetWindowPos(hWnd, video_mode.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 		}
-	};
-
-	if (video_mode.always_on_top) {
-		SetWindowPos(hWnd, video_mode.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-	}
 
 #if defined(OPENGL_ENABLED)
+		bool gles3_context = true;
+		if (p_video_driver != VIDEO_DRIVER_GLES3) {
+			gles3_context = false;
+		}
 
-	//Tony; hack.
-	if (isWindowsServer)
-		p_video_driver = VIDEO_DRIVER_GLES2;
+		bool editor = Engine::get_singleton()->is_editor_hint();
+		bool gl_initialization_error = false;
 
-	bool gles3_context = true;
-	if (p_video_driver != VIDEO_DRIVER_GLES3) {
-		gles3_context = false;
-	}
-
-	bool editor = Engine::get_singleton()->is_editor_hint();
-	bool gl_initialization_error = false;
-
-	gl_context = NULL;
-	//Tony; no window? make dummy rasterizer.
-	if (isWindowsServer) {
-		RasterizerDummy::make_current();
-	} else {
+		gl_context = NULL;
 		while (!gl_context) {
 			gl_context = memnew(ContextGL_Windows(hWnd, gles3_context));
 
@@ -1373,32 +1412,27 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 					"Unable to initialize Video driver");
 			return ERR_UNAVAILABLE;
 		}
-	}
 
-	video_driver_index = p_video_driver;
+		video_driver_index = p_video_driver;
 
-	if (gl_context)
-		gl_context->set_use_vsync(video_mode.use_vsync);
+		if (gl_context)
+			gl_context->set_use_vsync(video_mode.use_vsync);
 #endif
 
-	visual_server = memnew(VisualServerRaster);
-	if (!isWindowsServer) {
+		visual_server = memnew(VisualServerRaster);
 		if (get_render_thread_mode() != RENDER_THREAD_UNSAFE) {
 			visual_server = memnew(VisualServerWrapMT(visual_server, get_render_thread_mode() == RENDER_SEPARATE_THREAD));
 		}
-	}
 
-	visual_server->init();
+		visual_server->init();
 
-	input = memnew(InputDefault);
-	if (!isWindowsServer)
+		input = memnew(InputDefault);
 		joypad = memnew(JoypadWindows(input, &hWnd));
 
-	power_manager = memnew(PowerWindows);
+		power_manager = memnew(PowerWindows);
 
-	AudioDriverManager::initialize(p_audio_driver);
+		AudioDriverManager::initialize(p_audio_driver);
 
-	if (!isWindowsServer) {
 		TRACKMOUSEEVENT tme;
 		tme.cbSize = sizeof(TRACKMOUSEEVENT);
 		tme.dwFlags = TME_LEAVE;
@@ -1407,50 +1441,47 @@ Error OS_Windows::initialize(const VideoMode &p_desired, int p_video_driver, int
 		TrackMouseEvent(&tme);
 
 		RegisterTouchWindow(hWnd, 0);
-	}
 
-	_ensure_user_data_dir();
+		_ensure_user_data_dir();
 
-	if (!isWindowsServer)
 		DragAcceptFiles(hWnd, true);
 
-	move_timer_id = 1;
+		move_timer_id = 1;
 
-	if (!is_no_window_mode_enabled()) {
-		ShowWindow(hWnd, SW_SHOW); // Show The Window
-		SetForegroundWindow(hWnd); // Slightly Higher Priority
-		SetFocus(hWnd); // Sets Keyboard Focus To
-	}
+		if (!is_no_window_mode_enabled()) {
+			ShowWindow(hWnd, SW_SHOW); // Show The Window
+			SetForegroundWindow(hWnd); // Slightly Higher Priority
+			SetFocus(hWnd); // Sets Keyboard Focus To
+		}
 
-	if (p_desired.layered_splash) {
-		set_window_per_pixel_transparency_enabled(true);
-	}
+		if (p_desired.layered_splash) {
+			set_window_per_pixel_transparency_enabled(true);
+		}
 
-	// IME
-	im_himc = ImmGetContext(hWnd);
-	ImmReleaseContext(hWnd, im_himc);
+		// IME
+		im_himc = ImmGetContext(hWnd);
+		ImmReleaseContext(hWnd, im_himc);
 
-	im_position = Vector2();
+		im_position = Vector2();
 
-	set_ime_active(false);
+		set_ime_active(false);
 
-	if (!OS::get_singleton()->is_in_low_processor_usage_mode()) {
-		//SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-		SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-		DWORD index = 0;
-		HANDLE handle = AvSetMmThreadCharacteristics("Games", &index);
-		if (handle)
-			AvSetMmThreadPriority(handle, AVRT_PRIORITY_CRITICAL);
+		if (!OS::get_singleton()->is_in_low_processor_usage_mode()) {
+			//SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+			SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+			DWORD index = 0;
+			HANDLE handle = AvSetMmThreadCharacteristics("Games", &index);
+			if (handle)
+				AvSetMmThreadPriority(handle, AVRT_PRIORITY_CRITICAL);
 
-		// This is needed to make sure that background work does not starve the main thread.
-		// This is only setting priority of this thread, not the whole process.
-		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-	}
+			// This is needed to make sure that background work does not starve the main thread.
+			// This is only setting priority of this thread, not the whole process.
+			SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+		}
 
-	if (!isWindowsServer)
 		update_real_mouse_position();
-
-	return OK;
+		return OK;
+	}
 }
 
 void OS_Windows::set_clipboard(const String &p_text) {
@@ -1538,9 +1569,8 @@ void OS_Windows::delete_main_loop() {
 }
 
 void OS_Windows::set_main_loop(MainLoop *p_main_loop) {
-
-	input->set_main_loop(p_main_loop);
 	main_loop = p_main_loop;
+	input->set_main_loop(p_main_loop);
 }
 
 void OS_Windows::finalize() {
@@ -1554,14 +1584,15 @@ void OS_Windows::finalize() {
 
 	main_loop = NULL;
 
-	memdelete(joypad);
+	if (joypad != NULL)
+		memdelete(joypad);
 	memdelete(input);
 	touch_state.clear();
 
 	visual_server->finish();
 	memdelete(visual_server);
 #ifdef OPENGL_ENABLED
-	if (gl_context)
+	if (gl_context != NULL)
 		memdelete(gl_context);
 #endif
 
