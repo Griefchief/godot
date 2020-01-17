@@ -1094,7 +1094,6 @@ typedef enum _SHC_PROCESS_DPI_AWARENESS {
 	SHC_PROCESS_PER_MONITOR_DPI_AWARE = 2
 } SHC_PROCESS_DPI_AWARENESS;
 
-
 int OS_Windows::get_video_driver_count() const {
 	if (is_server_mode) {
 		return 1;
@@ -1112,7 +1111,6 @@ const char *OS_Windows::get_video_driver_name(int p_driver) const {
 int OS_Windows::get_current_video_driver() const {
 	return video_driver_index;
 }
-
 
 int OS_Windows::get_audio_driver_count() const {
 	if (is_server_mode) {
@@ -2317,6 +2315,7 @@ void OS_Windows::process_events() {
 
 	MSG msg;
 
+	// // killing events for game server, so joystick drivers etc don't crash server
 	if (!drop_events) {
 		joypad->process_joypads();
 	}
@@ -3124,7 +3123,7 @@ Error OS_Windows::move_to_trash(const String &p_path) {
 
 OS_Windows::OS_Windows(HINSTANCE _hInstance) {
 
-	drop_events = false;
+	drop_events = true; // killing input events for game server, so joystick drivers etc don't crash server
 	key_event_pos = 0;
 	layered_window = false;
 	hBitmap = NULL;

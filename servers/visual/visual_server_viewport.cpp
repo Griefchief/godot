@@ -264,7 +264,7 @@ void VisualServerViewport::draw_viewports() {
 		if (vp->update_mode == VS::VIEWPORT_UPDATE_DISABLED)
 			continue;
 
-		ERR_CONTINUE(!vp->render_target.is_valid());
+		// ERR_CONTINUE(!vp->render_target.is_valid()); //ultra spammy in the dsmanager stdout, shutting it down
 
 		bool visible = vp->viewport_to_screen_rect != Rect2() || vp->update_mode == VS::VIEWPORT_UPDATE_ALWAYS || vp->update_mode == VS::VIEWPORT_UPDATE_ONCE || (vp->update_mode == VS::VIEWPORT_UPDATE_WHEN_VISIBLE && VSG::storage->render_target_was_used(vp->render_target));
 		visible = visible && vp->size.x > 1 && vp->size.y > 1;

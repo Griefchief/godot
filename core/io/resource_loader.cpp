@@ -270,7 +270,7 @@ RES ResourceLoader::_load(const String &p_path, const String &p_original_path, c
 		}
 		found = true;
 		RES res = loader[i]->load(p_path, p_original_path != String() ? p_original_path : p_path, r_error);
-		if (res.is_null()) {
+		if (res.is_null()) {  // PNGs fail to load in server compiles, ignoring resource load fails
 			continue;
 		}
 
